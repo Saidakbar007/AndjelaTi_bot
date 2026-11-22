@@ -1,0 +1,44 @@
+[Unit]
+Description=Barber Booking Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as a dedicated, unprivileged system user — never as root.
+# Create it once with: sudo useradd --system --home /opt/barber-bot --shell /usr/sbin/nologin barberbot
+User=barberbot
+Group=barberbot
+
+# Adjust this to wherever the repo is actually cloned on the VPS.
+WorkingDirectory=/opt/barber-bot
+
+# Belt-and-suspenders: the app itself loads .env from its own project
+# root regardless of cwd (see bot/config.py), but systemd injecting the
+# same values means `systemctl show -p Environment` and `journalctl`
+# tooling can see them too, and the service still starts correctly even
+# if that self-loading behavior is ever changed.
+EnvironmentFile=/opt/barber-bot/.env
+
+ExecStart=/opt/barber-bot/.venv/bin/python main.py
+
+# aiogram's dp.start_polling() already handles SIGTERM/SIGINT gracefully
+# (stops polling, closes the HTTP session) by default, so a plain
+# `systemctl stop` / restart is clean. This just gives it a little time
+# to do that before systemd escalates to SIGKILL, and brings the bot
+# back automatically after any crash, network blip, or VPS reboot.
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+# Light sandboxing — the service only needs to read/write its own
+# project directory (SQLite file, nothing else) and talk out to the
+# Telegram API over HTTPS.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/barber-bot
+
+[Install]
+WantedBy=multi-user.target
