@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import html
 
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.database.models import Master
 from bot.handlers.client.states import BookingStates
 from bot.keyboards.calendar_kb import build_month_calendar
 from bot.keyboards.client_kb import (
@@ -26,6 +28,7 @@ from bot.services.booking_service import (
 from bot.services.schedule_service import (
     get_active_masters,
     get_client_month_availability,
+    get_day_schedule_grid,
     get_free_slots,
     get_master,
 )
@@ -44,6 +47,24 @@ def _add_minutes(time_value: dt.time, minutes: int) -> dt.time:
 
 def _parse_time(value: str) -> dt.time:
     return dt.datetime.strptime(value, "%H%M").time()
+
+
+def _format_day_schedule_text(date: dt.date, grid: list[dict], master: Master | None) -> str:
+    """Naglyadniy (at-a-glance) list of the day's slots for the client:
+    every slot that's still relevant (booked, or free in the future) with
+    its time and status, mirroring how the master reads her own day —
+    without exposing which client holds a booked slot.
+    """
+    lines = [f"📅 <b>{html.escape(format_date_human(date))}</b>\n"]
+    for row in grid:
+        if row["status"] == "booked":
+            lines.append(f"🕒 {format_time(row['start_time'])} — занято")
+        elif row["status"] == "free":
+            lines.append(f"🕒 {format_time(row['start_time'])} — свободно ✅")
+    lines.append("\nВыберите свободное время кнопкой ниже 👇")
+    if master is not None and master.phone:
+        lines.append(f"\n📞 Контакт: {html.escape(master.phone)}")
+    return "\n".join(lines)
 
 
 async def _show_calendar(
@@ -134,17 +155,25 @@ async def client_calendar_click(call: CallbackQuery, callback_data: CalCb, state
 
     if callback_data.action == "day":
         date = dt.date.fromisoformat(callback_data.date_str)
-        slots = await get_free_slots(session, master_id, date)
-        if not slots:
+        grid = await get_day_schedule_grid(session, master_id, date)
+        # Past-but-never-booked slots are dropped from the client's view —
+        # they can't be selected and showing them would be confusing
+        # clutter; a past slot that WAS booked still shows as "занято".
+        visible_grid = [row for row in grid if row["status"] != "past"]
+        free_slots = [row["start_time"] for row in visible_grid if row["status"] == "free"]
+        if not free_slots:
             await call.answer("На эту дату уже нет свободных слотов", show_alert=True)
             await _show_calendar(call.message, state, session, master_id, date.year, date.month, edit=True)
             return
 
+        master = await get_master(session, master_id)
+
         await state.update_data(master_id=master_id, date=callback_data.date_str)
         await state.set_state(BookingStates.choosing_slot)
         await call.message.edit_text(
-            f"Доступное время на {format_date_human(date)}:",
-            reply_markup=slots_kb(master_id, date, slots),
+            _format_day_schedule_text(date, visible_grid, master),
+            reply_markup=slots_kb(master_id, date, free_slots),
+            parse_mode="HTML",
         )
         await call.answer()
         return

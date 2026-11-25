@@ -21,6 +21,7 @@ from bot.services.schedule_service import (
     add_day_off,
     get_admin_month_overview,
     get_date_override,
+    get_day_schedule_grid,
     get_master_by_telegram_id,
     get_working_hours_for_date,
     is_day_off,
@@ -75,6 +76,7 @@ async def _show_day_card(
     override = await get_date_override(session, master_id, date)
     wh = await get_working_hours_for_date(session, master_id, date)
     is_working_weekday = wh is not None and wh.is_working_day
+    grid = await get_day_schedule_grid(session, master_id, date)
 
     lines = [f"<b>{format_date_human(date)}</b>"]
     if day_off_flag:
@@ -92,15 +94,35 @@ async def _show_day_card(
     else:
         lines.append("🚫 Нерабочий день (по шаблону недели)")
 
-    if bookings:
+    if grid:
+        # Full visual timeline of the day, in the master's own at-a-glance
+        # style: every slot, who's booked into it, and what's still free.
+        lines.append("\n<b>Расписание дня:</b>")
+        for row in grid:
+            time_label = format_time(row["start_time"])
+            if row["status"] == "booked":
+                booking = row["booking"]
+                client = await get_client_by_id(session, booking.client_id)
+                # Client-controlled (Telegram display name / phone) — must
+                # be HTML-escaped before going into a parse_mode="HTML"
+                # message, otherwise a crafted name (e.g. a stray "<" or
+                # "&") breaks Telegram's entity parser and the whole day
+                # card fails to render for the admin.
+                name = html.escape(client.full_name) if client and client.full_name else "Клиент"
+                phone = f" 📞{html.escape(client.phone)}" if client and client.phone else ""
+                lines.append(f"🕒 {time_label} — 🔴 {name}{phone}")
+            elif row["status"] == "past":
+                lines.append(f"🕒 {time_label} — ⚪ прошло")
+            else:
+                lines.append(f"🕒 {time_label} — 🟢 свободно")
+    elif bookings:
+        # Grid came back empty (e.g. the weekly template was switched to a
+        # rest day after bookings were already made for this date) but
+        # active bookings still exist — show them so nothing silently
+        # disappears from the admin's view.
         lines.append(f"\n<b>Записи ({len(bookings)}):</b>")
         for booking in bookings:
             client = await get_client_by_id(session, booking.client_id)
-            # Client-controlled (Telegram display name / phone) — must be
-            # HTML-escaped before going into a parse_mode="HTML" message,
-            # otherwise a crafted name (e.g. a stray "<" or "&") breaks
-            # Telegram's entity parser and the whole day card fails to
-            # render for the admin.
             name = html.escape(client.full_name) if client else "—"
             phone = html.escape(client.phone) if client and client.phone else "—"
             lines.append(f"🕒 {format_time(booking.start_time)} — {name} ({phone})")

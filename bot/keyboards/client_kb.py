@@ -56,7 +56,7 @@ def slots_kb(master_id: int, date: dt.date, slots: Sequence[dt.time]) -> InlineK
     builder = InlineKeyboardBuilder()
     for slot in slots:
         builder.button(
-            text=format_time(slot),
+            text=f"✅ {format_time(slot)}",
             callback_data=SlotCB(master_id=master_id, date=date.isoformat(), time=slot.strftime("%H%M")),
         )
     builder.adjust(3)

@@ -353,6 +353,53 @@ async def get_free_slots(
     return free_slots
 
 
+async def get_day_schedule_grid(
+    session: AsyncSession, master_id: int, date: dt.date
+) -> list[dict]:
+    """Full visual timeline of `date`: every slot start within working
+    hours (template or date override), stepped by the master's own slot
+    duration, each tagged with a status — "booked" (with the Booking row),
+    "past" (today, already gone, never booked), or "free" — so callers can
+    render the whole day at a glance like a master's own paper schedule,
+    instead of only a list of free times.
+
+    Returns [] for a day off / non-working day, mirroring get_free_slots.
+    """
+    master = await get_master(session, master_id)
+    if master is None or not master.is_active:
+        return []
+
+    if await is_day_off(session, master_id, date):
+        return []
+
+    override = await get_date_override(session, master_id, date)
+    if override is not None:
+        start_time, end_time = override.start_time, override.end_time
+    else:
+        wh = await get_working_hours_for_date(session, master_id, date)
+        if wh is None or not wh.is_working_day:
+            return []
+        start_time, end_time = wh.start_time, wh.end_time
+
+    slot_starts = _generate_slot_starts(start_time, end_time, master.slot_duration_minutes)
+    bookings = await get_active_bookings_on_date(session, master_id, date)
+    booking_by_start = {b.start_time: b for b in bookings}
+
+    current_time = now().time() if date == today() else None
+
+    grid: list[dict] = []
+    for slot_start in slot_starts:
+        booking = booking_by_start.get(slot_start)
+        if booking is not None:
+            status = "booked"
+        elif current_time is not None and slot_start <= current_time:
+            status = "past"
+        else:
+            status = "free"
+        grid.append({"start_time": slot_start, "booking": booking, "status": status})
+    return grid
+
+
 def upcoming_dates(horizon_days: int = BOOKING_HORIZON_DAYS) -> list[dt.date]:
     """Plain list of the next `horizon_days` calendar dates (today included),
     with no filtering by working hours / availability. Used by the admin
